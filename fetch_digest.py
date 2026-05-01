@@ -18,50 +18,58 @@ def build_digest() -> str:
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     sources_list = "\n".join(f"- {s}" for s in SOURCES)
 
-    prompt = (
-        f"Today is {today}. You are creating a daily AI newsletter digest for software developers.\n\n"
-        "Search the web for the latest AI news and developments from the last 24 hours. "
-        f"Prioritise content from these newsletters, but also include other major AI news:\n{sources_list}\n\n"
-        "After searching, write a WhatsApp-ready digest following these rules:\n"
-        f"- First line: *AI Digest – {today}*\n"
-        "- Group into sections (only include if you found relevant items):\n"
-        "    *🛠 Dev Tools*  *🧠 Models*  *🚀 Releases*  *📰 Industry News*\n"
-        "- 2–3 bullet points per section, one sentence each, developer-focused\n"
-        "- Bold key terms with *asterisks* (WhatsApp bold)\n"
-        "- Plain text only — no ## markdown headers\n"
-        "- Total length: 300–400 words\n"
-        "- Final line: *💡 Today's Takeaway:* one or two sentences for developers"
-    )
-
     client = anthropic.Anthropic()
-    messages = [{"role": "user", "content": prompt}]
+    messages = []
 
-    # Server-side web_search runs internally; pause_turn means Claude needs another turn.
+    # ── Phase 1: research ─────────────────────────────────────────────────────
+    # Let Claude search the web; we don't care about any text it emits here —
+    # only the accumulated tool results matter for the next phase.
+    messages.append({"role": "user", "content": (
+        f"Today is {today}. Search the web and find the most important AI news "
+        "and developments from the last 24 hours. Focus on these sources:\n"
+        f"{sources_list}\n\n"
+        "Also check for any other significant AI news published today."
+    )})
+
     for _ in range(5):
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=2048,
+            max_tokens=1024,
             tools=[
                 {"type": "web_search_20260209", "name": "web_search"},
                 {"type": "web_fetch_20260209",  "name": "web_fetch"},
             ],
             messages=messages,
         )
-
+        messages.append({"role": "assistant", "content": response.content})
         if response.stop_reason == "end_turn":
-            for block in response.content:
-                if block.type == "text":
-                    return block.text
             break
+        # pause_turn → keep going until done
 
-        if response.stop_reason == "pause_turn":
-            messages = [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": response.content},
-            ]
-            continue
+    # ── Phase 2: write ────────────────────────────────────────────────────────
+    # No tools — Claude must output the digest directly, no planning text.
+    messages.append({"role": "user", "content": (
+        "Based on your research, write the daily AI digest right now. "
+        "Begin immediately with the first line below — no preamble, no explanation.\n\n"
+        f"*AI Digest – {today}*\n\n"
+        "Group items under whichever sections apply:\n"
+        "*🛠 Dev Tools*   *🧠 Models*   *🚀 Releases*   *📰 Industry News*\n\n"
+        "Rules:\n"
+        "• 2–3 bullets per section, one developer-focused sentence each\n"
+        "• Bold key names/terms with *asterisks*\n"
+        "• 300–400 words total\n"
+        f"• Last line: *💡 Today's Takeaway:* 1–2 sentences"
+    )})
 
-        break
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2048,
+        messages=messages,          # no tools — pure writing turn
+    )
+
+    for block in response.content:
+        if block.type == "text":
+            return block.text
 
     return f"*AI Digest – {today}*\n\n📭 Could not generate digest."
 
